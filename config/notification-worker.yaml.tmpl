@@ -1,0 +1,24 @@
+agent_id: "${MITRITY_AGENT_ID}"
+api_key: "${MITRITY_AGENT_KEY}"
+
+control_plane:
+  base_url: "${MITRITY_CONTROL_PLANE_URL}"
+
+upstreams:
+  - name: "notify"
+    command: "/usr/local/bin/demo-tools"
+    args: ["--role", "notification-worker"]
+    namespace: "notify"
+
+  - name: "delegate"
+    command: "/usr/local/bin/demo-tools"
+    args: ["--role", "worker-delegate"]
+    namespace: "delegate"
+
+logging:
+  level: "info"
+  format: "text"
+
+cache:
+  profile_ttl: "1m"
+  max_entries: 100

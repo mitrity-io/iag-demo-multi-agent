@@ -1,0 +1,28 @@
+agent_id: "${MITRITY_AGENT_ID}"
+api_key: "${MITRITY_AGENT_KEY}"
+
+control_plane:
+  base_url: "${MITRITY_CONTROL_PLANE_URL}"
+
+upstreams:
+  # DB-shaped tools — read + write. The orchestrator delegates here when it
+  # needs persistent data work done.
+  - name: "data"
+    command: "/usr/local/bin/demo-tools"
+    args: ["--role", "data-worker"]
+    namespace: "data"
+
+  # Workers can also delegate further (worker → worker). Needed for the
+  # deep-chain / circular scenarios.
+  - name: "delegate"
+    command: "/usr/local/bin/demo-tools"
+    args: ["--role", "worker-delegate"]
+    namespace: "delegate"
+
+logging:
+  level: "info"
+  format: "text"
+
+cache:
+  profile_ttl: "1m"
+  max_entries: 100

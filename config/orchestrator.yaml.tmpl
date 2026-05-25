@@ -1,0 +1,31 @@
+agent_id: "${MITRITY_AGENT_ID}"
+api_key: "${MITRITY_AGENT_KEY}"
+
+control_plane:
+  base_url: "${MITRITY_CONTROL_PLANE_URL}"
+
+upstreams:
+  # Read-only filesystem for the orchestrator. Lets it inspect a customer
+  # request file before deciding what to delegate. Write access is
+  # intentionally absent — the orchestrator must delegate writes to the
+  # data-worker (which is what makes the privilege_escalation scenario fire).
+  - name: "filesystem"
+    command: "/usr/local/bin/demo-tools"
+    args: ["--role", "orchestrator-fs"]
+    namespace: "fs"
+
+  # Delegation tool — the meat of this demo. Calling delegate_to triggers a
+  # governed HTTP POST to the target worker; the gateway captures it as a
+  # delegation hop.
+  - name: "delegate"
+    command: "/usr/local/bin/demo-tools"
+    args: ["--role", "orchestrator-delegate"]
+    namespace: "delegate"
+
+logging:
+  level: "info"
+  format: "text"
+
+cache:
+  profile_ttl: "1m"
+  max_entries: 100

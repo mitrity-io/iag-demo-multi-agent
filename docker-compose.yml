@@ -1,0 +1,64 @@
+# MITRITY Multi-Agent Governance Demo
+#
+# Three independent containers, each running its own Claude agent + its own
+# MITRITY Gateway with its own MITRITY agent identity. The orchestrator
+# coordinates work by HTTP-POSTing to the workers; both workers can also
+# delegate further (worker → worker) so the chain depth can grow naturally.
+#
+# Run:    docker compose up --build
+# Stop:   docker compose down
+# Logs:   docker compose logs -f orchestrator   (most interesting stream)
+
+services:
+  orchestrator:
+    build:
+      context: .
+      dockerfile: orchestrator/Dockerfile
+    container_name: iag-demo-orchestrator
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      MITRITY_CONTROL_PLANE_URL: ${MITRITY_CONTROL_PLANE_URL}
+      MITRITY_AGENT_ID: ${MITRITY_AGENT_ID_ORCHESTRATOR}
+      MITRITY_AGENT_KEY: ${MITRITY_AGENT_KEY_ORCHESTRATOR}
+      # Worker endpoints inside the docker-compose network.
+      DATA_WORKER_URL: http://data-worker:8081
+      NOTIFY_WORKER_URL: http://notification-worker:8082
+    depends_on:
+      data-worker:
+        condition: service_started
+      notification-worker:
+        condition: service_started
+    restart: "no"   # one-shot scenario runner; don't loop on exit
+
+  data-worker:
+    build:
+      context: .
+      dockerfile: workers/data-worker/Dockerfile
+    container_name: iag-demo-data-worker
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      MITRITY_CONTROL_PLANE_URL: ${MITRITY_CONTROL_PLANE_URL}
+      MITRITY_AGENT_ID: ${MITRITY_AGENT_ID_DATA}
+      MITRITY_AGENT_KEY: ${MITRITY_AGENT_KEY_DATA}
+      # Workers can also delegate (for the deep-chain scenario).
+      ORCHESTRATOR_URL: http://orchestrator:8080
+      NOTIFY_WORKER_URL: http://notification-worker:8082
+    ports:
+      - "8081:8081"   # exposed for orchestrator-side curl debugging only
+    restart: unless-stopped
+
+  notification-worker:
+    build:
+      context: .
+      dockerfile: workers/notification-worker/Dockerfile
+    container_name: iag-demo-notification-worker
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      MITRITY_CONTROL_PLANE_URL: ${MITRITY_CONTROL_PLANE_URL}
+      MITRITY_AGENT_ID: ${MITRITY_AGENT_ID_NOTIFY}
+      MITRITY_AGENT_KEY: ${MITRITY_AGENT_KEY_NOTIFY}
+      ORCHESTRATOR_URL: http://orchestrator:8080
+      DATA_WORKER_URL: http://data-worker:8081
+    ports:
+      - "8082:8082"
+    restart: unless-stopped

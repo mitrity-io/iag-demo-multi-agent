@@ -1,0 +1,14 @@
+name: Code Review Agent
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  review:
+    uses: mitrity-io/iag-public-ci/.github/workflows/demo-code-review.yml@main
+    secrets: inherit
