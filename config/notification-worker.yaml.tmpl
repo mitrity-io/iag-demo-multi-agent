@@ -22,3 +22,11 @@ logging:
 cache:
   profile_ttl: "1m"
   max_entries: 100
+
+# Per-agent credential broker (see orchestrator.yaml.tmpl for context).
+# The notification-worker typically holds outbound credentials —
+# SMTP / Slack / SendGrid keys — distinct from the data-worker's DB
+# credentials. Each agent's grants and rotations are independent.
+credentials:
+  injection_enabled: true
+  cache_ttl_seconds: 30

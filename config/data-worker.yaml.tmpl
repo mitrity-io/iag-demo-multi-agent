@@ -26,3 +26,12 @@ logging:
 cache:
   profile_ttl: "1m"
   max_entries: 100
+
+# Per-agent credential broker (see orchestrator.yaml.tmpl for context).
+# Each worker has its own MITRITY identity, so credential grants and
+# rotation events are scoped per-worker. The data-worker is the
+# natural place to grant DB credentials; the notification-worker
+# would get separate API keys for its outbound email/Slack tools.
+credentials:
+  injection_enabled: true
+  cache_ttl_seconds: 30
