@@ -29,3 +29,15 @@ logging:
 cache:
   profile_ttl: "1m"
   max_entries: 100
+
+# Credential broker injection is enabled on all three agents in this
+# demo so customers who provision credentials in their tenant can see
+# ${credential:<id>} placeholders in tool args get substituted before
+# the call reaches the upstream. No scenario in this demo exercises
+# it directly (S1-S6 focus on delegation + threat intel); the
+# capability is available for ad-hoc testing. See the sidecar +
+# gateway demo Phase 6 for end-to-end demonstrations + dashboard
+# setup instructions, all of which apply here unchanged.
+credentials:
+  injection_enabled: true
+  cache_ttl_seconds: 30

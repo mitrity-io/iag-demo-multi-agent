@@ -98,6 +98,18 @@ The delegation chain accumulates real hops across the three event streams.
 
 See [`.env.example`](.env.example).
 
+## Credential broker (per-agent, hot rotation)
+
+All three gateway configs (`config/orchestrator.yaml.tmpl`, `config/data-worker.yaml.tmpl`, `config/notification-worker.yaml.tmpl`) ship with `credentials.injection_enabled: true`. None of S1–S6 exercise it directly — those scenarios focus on delegation chains + threat intelligence — but the capability is fully available for ad-hoc testing.
+
+To try it: provision a credential in the dashboard (`mitrity.com/app/credentials`), grant it to one of the three agents (e.g., the `data-worker`), then drive a tool call whose args include `${credential:<id>}`. The wrapper substitutes the placeholder via the broker before the upstream tool runs. Rotation in the dashboard propagates to the running container within 30 seconds without any restart.
+
+For a guided end-to-end walkthrough (provisioning, substitution, mid-scenario rotation, fail-closed), see Phase 6 in either:
+- [iag-demo-mcp-sidecar](https://github.com/mitrity-io/iag-demo-mcp-sidecar) — single-agent + transparent-proxy form
+- [iag-demo-mcp-gateway](https://github.com/mitrity-io/iag-demo-mcp-gateway) — single-agent + aggregating-gateway form
+
+The multi-agent setting adds one twist worth noting: each agent has its own MITRITY identity, so credential grants and rotations are scoped per-agent. The `data-worker` can hold DB credentials while the `notification-worker` independently holds SMTP / Slack / SendGrid keys; rotating one does not invalidate the other's cache.
+
 ## Troubleshooting
 
 **The orchestrator boots and prints "Skipping delegation/TI scenarios — current tenant is on the Starter plan."**
