@@ -5,4 +5,5 @@ __pycache__/
 *.py[cod]
 *$py.class
 .DS_Store
-demo-tools
+# Local-only compiled binary at repo root (do not match cmd/demo-tools/).
+/demo-tools
