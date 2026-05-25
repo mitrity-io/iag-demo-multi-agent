@@ -341,7 +341,7 @@ func handleDelegate(args map[string]any) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("POST %s/task: %w", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode >= 400 {
