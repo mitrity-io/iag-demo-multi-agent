@@ -21,13 +21,13 @@ cp .env.example .env
 docker compose up --build
 ```
 
-The orchestrator runner cycles through six scenarios over ~5 minutes. Watch the dashboard at [app.mitrity.com/app](https://app.mitrity.com/app) — specifically `/delegation-chains`, `/threat-intel`, and `/audit`.
+The orchestrator runner cycles through six scenarios over ~5 minutes. Watch the dashboard at [mitrity.com/app](https://mitrity.com/app) — specifically `/delegation-chains`, `/threat-intel`, and `/audit`.
 
 ## Setup
 
 ### 1. Provision three agents in the dashboard
 
-In `app.mitrity.com/app/agents`, click **+ New Agent** three times:
+In `mitrity.com/app/agents`, click **+ New Agent** three times:
 
 | Agent name | Mission scope | Plan-gated tools to enable |
 |---|---|---|
