@@ -259,6 +259,13 @@ func dispatch(name string, args map[string]any) (string, error) {
 }
 
 // ── FS (orchestrator only) ─────────────────────────────────────────────────
+//
+// Intentionally permissive: no workspace-jail check, no traversal sanitization.
+// The MITRITY gateway in front of demo-tools is the security boundary — it's
+// what the demo demonstrates. If we hardened the upstream tool, the gateway's
+// blocking of "/etc/passwd" reads etc. would become invisible. Production
+// upstream MCP servers should defense-in-depth, but demo upstreams stay raw
+// so the gateway's enforcement is the visible event.
 
 func handleFS(name string, args map[string]any) (string, error) {
 	path, _ := args["path"].(string)
