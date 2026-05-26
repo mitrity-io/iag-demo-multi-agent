@@ -112,9 +112,6 @@ The multi-agent setting adds one twist worth noting: each agent has its own MITR
 
 ## Troubleshooting
 
-**The orchestrator boots and prints "Skipping delegation/TI scenarios — current tenant is on the Starter plan."**
-Your tenant is on Starter. Delegation Chains and Threat Intelligence require Pro or Enterprise. Upgrade at `/app/billing`.
-
 **`/delegation-chains` page is empty after a run.**
 Check the orchestrator logs (`docker compose logs orchestrator`) for `chain_id` lines. If chains were emitted but the dashboard shows nothing, verify all three agents are registered to the **same tenant** (an agent registered to the wrong tenant means the worker's events land in a different tenant's audit log).
 

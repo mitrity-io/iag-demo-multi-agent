@@ -4,7 +4,7 @@ COPY go.mod ./
 COPY cmd ./cmd
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/demo-tools ./cmd/demo-tools
 
-FROM --platform=linux/amd64 ghcr.io/mitrity-io/mitrity-mcp-gateway:v0.5.0 AS gateway
+FROM ghcr.io/mitrity-io/mitrity-mcp-gateway:v0.7.1 AS gateway
 
 FROM --platform=linux/amd64 python:3.12-slim-bookworm
 
