@@ -7,11 +7,12 @@ COPY cmd/ cmd/
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -trimpath -o /demo-tools ./cmd/demo-tools
 
 # Pre-built mitrity-gateway binary from the public GHCR image.
-# Pinned to v0.7.1 so customers get a deterministic image and don't
-# accidentally pull a newer gateway whose wire protocol may have drifted
-# from this demo. --platform=linux/amd64 to match the Python + Go
-# stages (cross-arch COPY between stages fails at runtime with ENOENT).
-FROM --platform=linux/amd64 ghcr.io/mitrity-io/mitrity-mcp-gateway:v0.7.1 AS gateway
+# Uses :latest so customers automatically pick up current gateway
+# features and bug fixes — wire protocol is committed backwards-compatible
+# across patch + minor releases. Matches the single-agent gateway demo
+# pattern. --platform=linux/amd64 to match the Python + Go stages
+# (cross-arch COPY between stages fails at runtime with ENOENT).
+FROM --platform=linux/amd64 ghcr.io/mitrity-io/mitrity-mcp-gateway:latest AS gateway
 
 FROM --platform=linux/amd64 python:3.12-slim
 
