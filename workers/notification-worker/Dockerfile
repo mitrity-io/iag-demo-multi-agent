@@ -1,29 +1,36 @@
-FROM --platform=linux/amd64 golang:1.26-bookworm AS demo-tools-builder
-WORKDIR /src
+FROM --platform=linux/amd64 golang:1.26-alpine AS go-builder
+
+WORKDIR /build
 COPY go.mod ./
-COPY cmd ./cmd
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/demo-tools ./cmd/demo-tools
+RUN go mod download
+COPY cmd/ cmd/
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -trimpath -o /demo-tools ./cmd/demo-tools
 
-FROM ghcr.io/mitrity-io/mitrity-mcp-gateway:v0.7.1 AS gateway
+# Pre-built mitrity-gateway binary from the public GHCR image.
+# Pinned to v0.7.1 so customers get a deterministic image and don't
+# accidentally pull a newer gateway whose wire protocol may have drifted
+# from this demo. --platform=linux/amd64 to match the Python + Go
+# stages (cross-arch COPY between stages fails at runtime with ENOENT).
+FROM --platform=linux/amd64 ghcr.io/mitrity-io/mitrity-mcp-gateway:v0.7.1 AS gateway
 
-FROM --platform=linux/amd64 python:3.12-slim-bookworm
+FROM --platform=linux/amd64 python:3.12-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates gettext-base \
-    && rm -rf /var/lib/apt/lists/* \
-    && adduser --system --group --home /app appuser
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gettext-base \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir anthropic==0.39.0 rich==13.9.4 fastapi==0.115.5 uvicorn==0.32.1 requests==2.32.3
-
+COPY --from=go-builder /demo-tools /usr/local/bin/demo-tools
 COPY --from=gateway /mitrity-gateway /usr/local/bin/mitrity-gateway
-COPY --from=demo-tools-builder /out/demo-tools /usr/local/bin/demo-tools
 
 COPY config/notification-worker.yaml.tmpl /etc/mitrity/gateway.yaml.tmpl
+COPY workers/notification-worker/requirements.txt /app/requirements.txt
 COPY workers/notification-worker/entrypoint.sh /app/entrypoint.sh
 COPY workers/notification-worker/server.py /app/server.py
 
-RUN chmod +x /app/entrypoint.sh && chown -R appuser:appuser /app /etc/mitrity
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
-USER appuser
+WORKDIR /app
+RUN chmod +x /app/entrypoint.sh
+
 EXPOSE 8082
 ENTRYPOINT ["/app/entrypoint.sh"]
