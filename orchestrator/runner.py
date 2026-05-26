@@ -2,9 +2,6 @@
 
 Architecture:
   - Spawns mitrity-gateway as a subprocess (stdio MCP).
-  - On boot, pre-flights the tenant's plan via the control plane. If the
-    connected agent's tenant is on Starter, prints a banner and exits 0 —
-    delegation chains + threat intelligence are Pro/Enterprise features.
   - For each scenario, asks Claude (sonnet-4) to perform the task with
     the EXACT delegate_to args from the scenario prompt. Claude calls the
     delegate_to tool, the gateway intercepts and adds the hop to the
@@ -37,7 +34,6 @@ import uuid
 from typing import Any
 
 import anthropic
-import requests
 from rich.console import Console
 from rich.panel import Panel
 
@@ -45,39 +41,6 @@ console = Console()
 MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
 AGENT_ID = os.environ["MITRITY_AGENT_ID"]
 CONTROL_PLANE = os.environ["MITRITY_CONTROL_PLANE_URL"]
-AGENT_KEY = os.environ["MITRITY_AGENT_KEY"]
-
-
-# ───────────────────────────────────────────────────────────────────────────
-# Pre-flight: skip cleanly on Starter tenants
-# ───────────────────────────────────────────────────────────────────────────
-
-
-def tenant_supports_features() -> bool:
-    """Check the connected agent's tenant plan. Returns True for Pro and
-    Enterprise; False (with a printed banner) for Starter."""
-    try:
-        r = requests.get(
-            f"{CONTROL_PLANE}/api/v1/agents/me",
-            headers={"X-Agent-Key": AGENT_KEY},
-            timeout=10,
-        )
-        r.raise_for_status()
-        plan = (r.json().get("tenant", {}) or {}).get("plan", "")
-    except Exception as e:
-        console.print(f"[yellow]Could not determine tenant plan ({e}); attempting demo anyway.[/yellow]")
-        return True
-    if plan == "starter":
-        console.print(Panel(
-            "[bold yellow]Tenant is on the Starter plan.[/bold yellow]\n\n"
-            "Delegation Chains and Threat Intelligence require Pro or Enterprise.\n"
-            "The demo container will exit cleanly. Upgrade at /app/billing\n"
-            "and rerun to see the multi-agent governance scenarios.",
-            title="Multi-agent demo skipped",
-            border_style="yellow",
-        ))
-        return False
-    return True
 
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -319,8 +282,6 @@ def main() -> None:
         f"Connecting as agent [bold]{AGENT_ID}[/bold] to [bold]{CONTROL_PLANE}[/bold]",
         title="MITRITY Multi-Agent Demo — Orchestrator",
     ))
-    if not tenant_supports_features():
-        return
 
     mcp = MCPClient()
     console.print(f"[dim]Discovered {len(mcp.tools)} tools[/dim]")

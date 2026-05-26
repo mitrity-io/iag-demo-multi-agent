@@ -8,10 +8,12 @@ COPY cmd ./cmd
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/demo-tools ./cmd/demo-tools
 
 # Pre-built mitrity-gateway binary from the public GHCR image published by
-# iag-sentinel's release pipeline. Anonymous pull works. Pinned to v0.5.0
+# iag-sentinel's release pipeline. Anonymous pull works. Pinned to v0.7.1
 # so demo customers get a deterministic image and don't accidentally pull
 # a newer gateway whose wire protocol may have drifted from this demo.
-FROM --platform=linux/amd64 ghcr.io/mitrity-io/mitrity-mcp-gateway:v0.5.0 AS gateway
+# v0.7.1 is the first multi-arch publish (linux/amd64 + linux/arm64), so
+# we let Docker pick the host's native architecture automatically.
+FROM ghcr.io/mitrity-io/mitrity-mcp-gateway:v0.7.1 AS gateway
 
 FROM --platform=linux/amd64 python:3.12-slim-bookworm
 
