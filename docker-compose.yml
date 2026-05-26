@@ -20,6 +20,12 @@ services:
       MITRITY_CONTROL_PLANE_URL: ${MITRITY_CONTROL_PLANE_URL}
       MITRITY_AGENT_ID: ${MITRITY_AGENT_ID_ORCHESTRATOR}
       MITRITY_AGENT_KEY: ${MITRITY_AGENT_KEY_ORCHESTRATOR}
+      # Peer agent IDs — embedded in scenario prompts so Claude can fill in
+      # the to_agent_id arg correctly when delegating. Without these the
+      # orchestrator's only known UUID is its own and it falsely flags every
+      # delegation as circular.
+      MITRITY_AGENT_ID_DATA: ${MITRITY_AGENT_ID_DATA}
+      MITRITY_AGENT_ID_NOTIFY: ${MITRITY_AGENT_ID_NOTIFY}
       # Worker endpoints inside the docker-compose network.
       DATA_WORKER_URL: http://data-worker:8081
       NOTIFY_WORKER_URL: http://notification-worker:8082
@@ -40,7 +46,10 @@ services:
       MITRITY_CONTROL_PLANE_URL: ${MITRITY_CONTROL_PLANE_URL}
       MITRITY_AGENT_ID: ${MITRITY_AGENT_ID_DATA}
       MITRITY_AGENT_KEY: ${MITRITY_AGENT_KEY_DATA}
-      # Workers can also delegate (for the deep-chain scenario).
+      # Peer agent IDs — workers can delegate further in S3, so they need
+      # the same UUIDs available for Claude to fill in to_agent_id correctly.
+      MITRITY_AGENT_ID_ORCHESTRATOR: ${MITRITY_AGENT_ID_ORCHESTRATOR}
+      MITRITY_AGENT_ID_NOTIFY: ${MITRITY_AGENT_ID_NOTIFY}
       ORCHESTRATOR_URL: http://orchestrator:8080
       NOTIFY_WORKER_URL: http://notification-worker:8082
     ports:
@@ -57,6 +66,9 @@ services:
       MITRITY_CONTROL_PLANE_URL: ${MITRITY_CONTROL_PLANE_URL}
       MITRITY_AGENT_ID: ${MITRITY_AGENT_ID_NOTIFY}
       MITRITY_AGENT_KEY: ${MITRITY_AGENT_KEY_NOTIFY}
+      # Peer agent IDs — workers can delegate further in S3.
+      MITRITY_AGENT_ID_ORCHESTRATOR: ${MITRITY_AGENT_ID_ORCHESTRATOR}
+      MITRITY_AGENT_ID_DATA: ${MITRITY_AGENT_ID_DATA}
       ORCHESTRATOR_URL: http://orchestrator:8080
       DATA_WORKER_URL: http://data-worker:8081
     ports:
