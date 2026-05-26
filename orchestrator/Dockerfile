@@ -19,8 +19,9 @@ FROM --platform=linux/amd64 ghcr.io/mitrity-io/mitrity-mcp-gateway:v0.7.1 AS gat
 FROM --platform=linux/amd64 python:3.12-slim
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gettext-base \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get install -y --no-install-recommends ca-certificates gettext-base \
+    && rm -rf /var/lib/apt/lists/* \
+    && adduser --system --group --home /app appuser
 
 COPY --from=go-builder /demo-tools /usr/local/bin/demo-tools
 COPY --from=gateway /mitrity-gateway /usr/local/bin/mitrity-gateway
@@ -33,7 +34,8 @@ COPY orchestrator/runner.py /app/runner.py
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 WORKDIR /app
-RUN chmod +x /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh && chown -R appuser:appuser /app /etc/mitrity
 
+USER appuser
 EXPOSE 8080
 ENTRYPOINT ["/app/entrypoint.sh"]
