@@ -91,10 +91,18 @@ class WorkerAgent:
         ]
 
     def run(self, task: str, chain_id: str, delegator_agent_id: str) -> str:
+        # delegator_agent_id here is the UUID of the upstream agent that
+        # called THIS worker — NOT this worker's own AGENT_ID. When we
+        # forward the chain via delegate_to, we pass that same upstream
+        # delegator forward so the backend's delegation ledger records
+        # the real chain instead of treating each hop as an independent
+        # root invocation.
         prompt = (
             f"Incoming task (chain_id={chain_id}, delegator={delegator_agent_id}): {task}\n\n"
             f"If the task asks you to delegate further, you must pass chain_id='{chain_id}' "
-            f"and delegator_agent_id='{AGENT_ID}' on your delegate_to call."
+            f"and delegator_agent_id='{delegator_agent_id}' on your delegate_to call. "
+            "The delegator_agent_id is the UUID of the agent that called you (the upstream "
+            "hop), NOT your own agent ID — keep forwarding it as-is."
         )
         messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
         for _ in range(6):
