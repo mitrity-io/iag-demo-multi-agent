@@ -27,6 +27,19 @@ MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
 AGENT_ID = os.environ["MITRITY_AGENT_ID"]
 WORKER_ROLE = "data-worker"
 LISTEN_PORT = 8081
+
+# Peer agent UUIDs — populated per docker-compose so this worker's prompt
+# can hand Claude a real {target_worker → UUID} lookup table. Without this
+# Claude invents a non-UUID string for to_agent_id on downstream
+# delegate_to calls and the backend rejects with 400.
+PEER_AGENT_IDS = {
+    name: os.environ.get(env_var, "")
+    for name, env_var in [
+        ("orchestrator", "MITRITY_AGENT_ID_ORCHESTRATOR"),
+        ("notification-worker", "MITRITY_AGENT_ID_NOTIFY"),
+    ]
+    if os.environ.get(env_var)
+}
 SYSTEM_PROMPT = (
     "You are the data-worker agent in a multi-agent governance demo. You "
     "have DB tools (query_database, fetch_orders, create_order) and a "
@@ -111,13 +124,19 @@ class WorkerAgent:
         # delegator forward so the backend's delegation ledger records
         # the real chain (orchestrator → data-worker → notification-worker)
         # instead of treating each hop as an independent root invocation.
+        peer_table = "\n".join(
+            f"  - target_worker='{name}' → to_agent_id='{aid}'"
+            for name, aid in PEER_AGENT_IDS.items()
+        ) or "  (no peer UUIDs configured — downstream delegate_to will fail)"
         prompt = (
             f"Incoming task (chain_id={chain_id}, delegator={delegator_agent_id}): {task}\n\n"
             f"If the task asks you to delegate further, you must pass chain_id='{chain_id}' "
             f"and delegator_agent_id='{delegator_agent_id}' on your delegate_to call so the chain "
             "stays connected. The delegator_agent_id is the UUID of the agent that called "
             "you (the upstream hop), NOT your own agent ID — keep forwarding it as-is. "
-            "Pick the appropriate target_worker from the enum."
+            "Pick the appropriate target_worker from the enum, and use the matching "
+            "to_agent_id UUID from this lookup table (the backend rejects non-UUID values):\n"
+            f"{peer_table}"
         )
         messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
         for _ in range(6):
