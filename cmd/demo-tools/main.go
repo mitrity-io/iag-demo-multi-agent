@@ -10,6 +10,11 @@
 //	                      create_order)
 //	notification-worker   send_notification, email_customer
 //
+// The gateway serves every tool under its upstream's namespace as
+// <namespace>__<tool> (fs__read_file, delegate__delegate_to, data__fetch_orders,
+// notify__email_customer) and calls this server with the bare name, so the
+// dispatch below never sees the prefix.
+//
 // The delegate_to tool's input schema declares the exact arg keys the
 // gateway's interceptor reads from action.Parameters (delegation_chain_id /
 // delegator_agent_id / etc.). The HTTP forward to the target worker

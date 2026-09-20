@@ -1,5 +1,6 @@
-# Orchestrator: Claude-driven agent that delegates work to workers via HTTP.
-# Each scenario in runner.py is one or more `delegate_to` tool calls.
+# Orchestrator: a Claude Agent SDK agent that delegates work to the workers
+# through its own Mitrity Gateway. Each scenario in phases/phase7_delegation_chains.py
+# is one `delegate__delegate_to` tool call; the workers delegate further on their own.
 
 FROM --platform=linux/amd64 golang:1.26-alpine AS go-builder
 
@@ -19,24 +20,43 @@ FROM --platform=linux/amd64 ghcr.io/mitrity-io/mitrity-mcp-gateway:latest AS gat
 
 FROM --platform=linux/amd64 python:3.12-slim
 
+# gettext-base: envsubst renders the gateway config in entrypoint.sh.
+# ca-certificates: TLS to PyPI at build time and to the control plane at runtime.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates gettext-base \
-    && rm -rf /var/lib/apt/lists/* \
-    && adduser --system --group --home /app appuser
+    && apt-get install -y --no-install-recommends gettext-base ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY --from=go-builder /demo-tools /usr/local/bin/demo-tools
 COPY --from=gateway /mitrity-gateway /usr/local/bin/mitrity-gateway
 
 COPY config/orchestrator.yaml.tmpl /etc/mitrity/gateway.yaml.tmpl
-COPY orchestrator/requirements.txt /app/requirements.txt
-COPY orchestrator/entrypoint.sh /app/entrypoint.sh
-COPY orchestrator/runner.py /app/runner.py
+COPY orchestrator/requirements.txt orchestrator/entrypoint.sh orchestrator/runner.py orchestrator/output.py /app/
+COPY orchestrator/phases/ /app/phases/
 
+# The Claude Agent SDK wheel bundles the Claude Code runtime; no Node.js needed.
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
-WORKDIR /app
-RUN chmod +x /app/entrypoint.sh && chown -R appuser:appuser /app /etc/mitrity
+# The MITRITY adapter from PyPI, pinned to a release. Override for another version:
+# docker compose build --build-arg MITRITY_PYTHON_SPEC='mitrity[claude-agent-sdk]==X.Y.Z'.
+ARG MITRITY_PYTHON_SPEC="mitrity[claude-agent-sdk]==0.2.0"
+RUN pip install --no-cache-dir "$MITRITY_PYTHON_SPEC"
 
-USER appuser
-EXPOSE 8080
+# The orchestrator runs as an unprivileged user (uid 1000, as in the gateway
+# demo). The gateway refuses an admission runtime directory it does not own,
+# so /run/mitrity is created for this user before the switch (mode 0700;
+# entrypoint.sh only re-asserts it). /etc/mitrity takes the rendered
+# gateway.yaml, /workspace is the root of the orchestrator's read-only
+# filesystem tools and the gateway's transport key, and $HOME the Claude Code
+# session state.
+RUN groupadd --gid 1000 demo \
+    && useradd --uid 1000 --gid demo --create-home demo \
+    && mkdir -p /run/mitrity /workspace \
+    && chmod 0700 /run/mitrity \
+    && chown -R demo:demo /run/mitrity /etc/mitrity /workspace \
+    && chmod +x /app/entrypoint.sh
+
+WORKDIR /app
+USER demo
+ENV HOME=/home/demo
+
 ENTRYPOINT ["/app/entrypoint.sh"]
