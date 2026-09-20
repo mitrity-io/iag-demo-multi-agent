@@ -1,3 +1,7 @@
-anthropic>=0.42.0
+# The Claude Agent SDK, pinned: its platform wheel bundles the Claude Code runtime
+# (claude_agent_sdk/_bundled/claude), so the image needs no Node.js. Bump deliberately
+# and check the new wheel still ships the binary.
+claude-agent-sdk==0.2.157
 rich>=13.0.0
-requests>=2.32.0
+# The MITRITY adapter (`mitrity[claude-agent-sdk]`) is installed by the Dockerfile
+# from the MITRITY_PYTHON_SPEC build argument, pinned to a PyPI release.

@@ -1,297 +1,268 @@
-"""Orchestrator runner — Claude loop that drives six scenarios end-to-end.
+"""MITRITY Multi-Agent Governance Demo — Orchestrator runner.
 
-Architecture:
-  - Spawns mitrity-gateway as a subprocess (stdio MCP).
-  - For each scenario, asks Claude (sonnet-4) to perform the task with
-    the EXACT delegate_to args from the scenario prompt. Claude calls the
-    delegate_to tool, the gateway intercepts and adds the hop to the
-    chain, the tool implementation HTTP-POSTs to the named worker.
-  - Sub-scenarios that span multiple hops re-use the same chain_id
-    across the orchestrator's calls and the workers' downstream calls
-    (workers extract chain_id from the incoming HTTP body).
+Phase 7 of the MITRITY governance demo series: delegation chains and threat
+intelligence. The single-agent gateway demo (iag-demo-mcp-gateway) runs phases
+1-6, 8 and 9 and has no phase 7; this demo is that phase, with three governed
+agents in three containers.
 
-Scenarios:
-  S1 clean order lookup (orchestrator → data-worker)
-  S2 order creation requiring write perms (privilege_escalation)
-  S3 end-to-end pipeline (orchestrator → data-worker → notification-worker)
-  S4 deep chain exceeding max_chain_depth
-  S5 threat-intel match (worker reads /etc/passwd → built-in indicator)
-  S6 circular delegation (worker → orchestrator → loop)
+The orchestrator is a Claude Agent SDK session governed by MITRITY on both of
+its entrances:
 
-Each scenario gives the dashboard a row to point at. Six total takes
-~5 minutes including LLM latency.
+- MCP tools (delegate__delegate_to, fs__read_file, fs__list_directory) reach the
+  model through the orchestrator's own Mitrity Gateway, which the SDK starts as
+  its MCP server. Every tools/call is judged by the gateway before the upstream
+  tool runs (surface mcp_gateway). An allowed delegate__delegate_to HTTP-POSTs
+  the task to the named worker, whose own gateway judges the next hop on the
+  same chain (workers extract chain_id from the incoming HTTP body).
+- The SDK's own built-in tools (Bash, Write, Edit) never produce an MCP call.
+  `mitrity.claude_agent_sdk.Governor` installs the PreToolUse hook that admits
+  each of them through the gateway's loopback admission API before the SDK
+  runs it (surface agent_hook). No scenario here asks for them; they are hooked
+  so the orchestrator's coverage is complete and attested. If the edge cannot
+  be reached, the call is denied — there is no fail-open mode.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
-import subprocess
-import sys
-import threading
 import time
-import uuid
 from typing import Any
 
-import anthropic
-from rich.console import Console
-from rich.panel import Panel
+import claude_agent_sdk
+import mitrity
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeSDKClient,
+    PermissionResultAllow,
+    ResultMessage,
+    TextBlock,
+    ToolPermissionContext,
+    ToolResultBlock,
+    ToolUseBlock,
+    UserMessage,
+)
+from mitrity.claude_agent_sdk import Governor
+from output import (
+    agent_message,
+    console,
+    info,
+    pause,
+    phase_header,
+    print_summary,
+    tool_allowed,
+    tool_blocked,
+    tool_held,
+    worker_reply,
+)
+from phases import phase7_delegation_chains
 
-console = Console()
-MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
-AGENT_ID = os.environ["MITRITY_AGENT_ID"]
-CONTROL_PLANE = os.environ["MITRITY_CONTROL_PLANE_URL"]
+GATEWAY_NAME = "mitrity"
+GATEWAY_COMMAND = "/usr/local/bin/mitrity-gateway"
+GATEWAY_CONFIG = "/etc/mitrity/gateway.yaml"
+DELEGATE_TOOL = "delegate__delegate_to"
 
+# The built-in tools the SDK may use. Bash, Write and Edit are execution-capable
+# and are admitted through the hook; Read, Glob and Grep are not hooked, and are
+# deliberately absent from the execution-capable inventory (see the contract).
+BUILTIN_TOOLS = ["Bash", "Write", "Edit", "Read", "Glob", "Grep"]
 
-# ───────────────────────────────────────────────────────────────────────────
-# MCP client — spawns mitrity-gateway, speaks JSON-RPC over stdio
-# ───────────────────────────────────────────────────────────────────────────
-
-
-class MCPClient:
-    def __init__(self) -> None:
-        self.proc = subprocess.Popen(
-            ["/usr/local/bin/mitrity-gateway", "--config", "/etc/mitrity/gateway.yaml"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            bufsize=0,
-        )
-        self._next_id = 0
-        self._lock = threading.Lock()
-        # Drain stderr in a background thread so the pipe never fills.
-        threading.Thread(
-            target=self._drain_stderr, args=(self.proc.stderr,), daemon=True
-        ).start()
-        # MCP handshake.
-        self._call("initialize", {
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": {"name": "orchestrator", "version": "0.1.0"},
-        })
-        self.tools = self._call("tools/list", {}).get("tools", [])
-
-    @staticmethod
-    def _drain_stderr(stream: Any) -> None:
-        for line in iter(stream.readline, b""):
-            sys.stderr.write(line.decode(errors="replace"))
-
-    def _call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
-        with self._lock:
-            self._next_id += 1
-            rid = self._next_id
-        msg = {"jsonrpc": "2.0", "id": rid, "method": method, "params": params}
-        self.proc.stdin.write((json.dumps(msg) + "\n").encode())
-        self.proc.stdin.flush()
-        # Read response — gateway always replies on the matching id.
-        line = self.proc.stdout.readline()
-        if not line:
-            raise RuntimeError("mitrity-gateway closed stdout")
-        resp = json.loads(line)
-        if "error" in resp:
-            raise RuntimeError(f"MCP error: {resp['error']}")
-        return resp.get("result", {})
-
-    def call_tool(self, name: str, arguments: dict[str, Any]) -> str:
-        r = self._call("tools/call", {"name": name, "arguments": arguments})
-        # MCP responses come back as content[].text — concat any text blocks.
-        parts = [b.get("text", "") for b in r.get("content", []) if b.get("type") == "text"]
-        return "\n".join(parts)
+SYSTEM_PROMPT = (
+    "You are the orchestrator agent in a multi-agent governance demo. Your tools are served "
+    "by an MCP server named 'mitrity': delegate__delegate_to hands a task to a worker, "
+    "fs__read_file and fs__list_directory read the workspace. You also have your own built-in "
+    "Bash, Write, Edit and Read tools, which no task here needs. When asked to delegate, call "
+    "delegate__delegate_to with the EXACT argument values from the message — do not invent "
+    "IDs or chain identifiers, and do not substitute one tool for another. When a tool call is "
+    "denied, report the reason you were given and stop; do not retry. Be concise."
+)
 
 
-# ───────────────────────────────────────────────────────────────────────────
-# Claude agent loop
-# ───────────────────────────────────────────────────────────────────────────
+def display_name(tool_name: str) -> str:
+    """`mcp__mitrity__delegate__delegate_to` -> `delegate__delegate_to (gateway)`; built-ins are marked."""
+    prefix = f"mcp__{GATEWAY_NAME}__"
+    if tool_name.startswith(prefix):
+        return f"{tool_name[len(prefix):]} (gateway)"
+    if tool_name.startswith("mcp__"):
+        return f"{tool_name} (ungoverned MCP server)"
+    if tool_name in ("Bash", "Write", "Edit"):
+        return f"{tool_name} (built-in, admitted via hook)"
+    return f"{tool_name} (built-in)"
 
 
-class OrchestratorAgent:
-    def __init__(self, mcp: MCPClient) -> None:
-        self.client = anthropic.Anthropic()
-        self.mcp = mcp
-        # Anthropic API rejects ":" in tool names — remap namespace:tool
-        # to namespace__tool for the API and back for MCP.
-        self._to_api: dict[str, str] = {}
-        self._from_api: dict[str, str] = {}
-        for t in mcp.tools:
-            api = t["name"].replace(":", "__")
-            self._to_api[t["name"]] = api
-            self._from_api[api] = t["name"]
-        self._tools = [
-            {
-                "name": self._to_api[t["name"]],
-                "description": t["description"],
-                "input_schema": t["inputSchema"],
-            }
-            for t in mcp.tools
-        ]
-
-    def run(self, prompt: str, max_turns: int = 8) -> str:
-        messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
-        for _ in range(max_turns):
-            r = self.client.messages.create(
-                model=MODEL,
-                max_tokens=1024,
-                system=(
-                    "You are the orchestrator agent in a multi-agent governance demo. "
-                    "When asked to delegate, call the delegate_to tool with the EXACT "
-                    "argument values from the user's message — do not invent IDs or "
-                    "chain identifiers. Use the read_file and list_directory tools to "
-                    "inspect workspace files when relevant. Keep responses concise."
-                ),
-                tools=self._tools,
-                messages=messages,
-            )
-            text_blocks = [c.text for c in r.content if c.type == "text"]
-            tool_uses = [c for c in r.content if c.type == "tool_use"]
-            if not tool_uses:
-                return "\n".join(text_blocks)
-            # Execute every tool call and append both blocks to the
-            # conversation, then loop.
-            messages.append({"role": "assistant", "content": r.content})
-            results: list[dict[str, Any]] = []
-            for tu in tool_uses:
-                mcp_name = self._from_api[tu.name]
-                try:
-                    out = self.mcp.call_tool(mcp_name, tu.input)
-                except Exception as e:
-                    out = f"[tool error: {e}]"
-                results.append({"type": "tool_result", "tool_use_id": tu.id, "content": out})
-            messages.append({"role": "user", "content": results})
-        return "(max turns reached)"
+def result_text(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    parts = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "text":
+            parts.append(str(block.get("text", "")))
+    return "\n".join(parts)
 
 
-# ───────────────────────────────────────────────────────────────────────────
-# Scenarios
-# ───────────────────────────────────────────────────────────────────────────
-
-
-def chain_id(label: str) -> str:
-    return f"demo-{label}-{int(time.time())}-{uuid.uuid4().hex[:6]}"
-
-
-def scenarios(agent: OrchestratorAgent) -> None:
-    data_worker_id = os.environ.get("MITRITY_AGENT_ID_DATA", "")
-    notify_worker_id = os.environ.get("MITRITY_AGENT_ID_NOTIFY", "")
-    # NOTE: the orchestrator container doesn't have the worker IDs in its
-    # env by default (we don't want to leak other agents' keys); we expect
-    # the operator to set MITRITY_AGENT_ID_DATA / _NOTIFY when they want
-    # the prompts to pass real UUIDs. If unset, fall back to placeholder
-    # values — chains still emit but escalation/circular won't reference
-    # real agents and the dashboard won't link them.
-
-    if not data_worker_id:
-        data_worker_id = AGENT_ID  # fallback: chain-to-self
-    if not notify_worker_id:
-        notify_worker_id = AGENT_ID
-
-    # ── S1 clean order lookup
-    cid = chain_id("s1-clean")
-    console.rule("[cyan]S1 — Clean order lookup")
-    agent.run(
-        "Delegate an order lookup to the data-worker. Call delegate_to with:\n"
-        f"  delegation_chain_id = '{cid}'\n"
-        f"  delegator_agent_id = '{AGENT_ID}'\n"
-        f"  to_agent_id = '{data_worker_id}'\n"
-        "  target_worker = 'data-worker'\n"
-        "  task = 'Fetch the most recent orders for customer cust-42'"
-    )
-    time.sleep(2)
-
-    # ── S2 privilege escalation
-    cid = chain_id("s2-escalation")
-    console.rule("[cyan]S2 — Privilege escalation (orchestrator delegates a write)")
-    agent.run(
-        "Delegate a NEW order creation to the data-worker. Call delegate_to with:\n"
-        f"  delegation_chain_id = '{cid}'\n"
-        f"  delegator_agent_id = '{AGENT_ID}'\n"
-        f"  to_agent_id = '{data_worker_id}'\n"
-        "  target_worker = 'data-worker'\n"
-        "  task = 'Create a new order for cust-42 with items: widget x2'"
-    )
-    time.sleep(2)
-
-    # ── S3 end-to-end pipeline
-    cid = chain_id("s3-pipeline")
-    console.rule("[cyan]S3 — Pipeline (orchestrator → data-worker → notification-worker)")
-    agent.run(
-        "Run the order-confirmation pipeline. Delegate the lookup to the "
-        f"data-worker first; the data-worker will further delegate the email "
-        "to the notification-worker. Use these args for your delegate_to call:\n"
-        f"  delegation_chain_id = '{cid}'\n"
-        f"  delegator_agent_id = '{AGENT_ID}'\n"
-        f"  to_agent_id = '{data_worker_id}'\n"
-        "  target_worker = 'data-worker'\n"
-        "  task = 'Look up order ord-7 and ask the notification-worker to email "
-        f"the customer their confirmation. Use chain_id={cid}.'"
-    )
-    time.sleep(2)
-
-    # ── S4 deep chain
-    cid = chain_id("s4-deep")
-    console.rule("[cyan]S4 — Deep chain (depth_exceeded)")
-    agent.run(
-        "Start a multi-step audit pipeline. Delegate to the data-worker, and "
-        "tell it to cascade through several follow-up steps so we exceed the "
-        "max chain depth. Use:\n"
-        f"  delegation_chain_id = '{cid}'\n"
-        f"  delegator_agent_id = '{AGENT_ID}'\n"
-        f"  to_agent_id = '{data_worker_id}'\n"
-        "  target_worker = 'data-worker'\n"
-        "  task = 'Cascade an audit step through 5 further delegate_to calls "
-        f"using chain_id={cid}. Each step should delegate to the next worker '"
-        "in line.'"
-    )
-    time.sleep(2)
-
-    # ── S5 threat intelligence
-    cid = chain_id("s5-ti")
-    console.rule("[cyan]S5 — Threat intel match (worker reads /etc/passwd)")
-    agent.run(
-        "Ask the data-worker to inspect the system user file as part of a "
-        "diagnostic check. The path /etc/passwd matches the built-in "
-        "system-file-read indicator and should be flagged. Use:\n"
-        f"  delegation_chain_id = '{cid}'\n"
-        f"  delegator_agent_id = '{AGENT_ID}'\n"
-        f"  to_agent_id = '{data_worker_id}'\n"
-        "  target_worker = 'data-worker'\n"
-        "  task = 'Read /etc/passwd and report the first line — diagnostic check'"
-    )
-    time.sleep(2)
-
-    # ── S6 circular
-    cid = chain_id("s6-circular")
-    console.rule("[cyan]S6 — Circular delegation")
-    agent.run(
-        "Delegate to the data-worker, asking it to loop back and confirm with "
-        "the orchestrator. Use:\n"
-        f"  delegation_chain_id = '{cid}'\n"
-        f"  delegator_agent_id = '{AGENT_ID}'\n"
-        f"  to_agent_id = '{data_worker_id}'\n"
-        "  target_worker = 'data-worker'\n"
-        "  task = 'Loop back to the orchestrator for confirmation. Use "
-        f"chain_id={cid} and target_worker=orchestrator on your downstream "
-        "delegate_to call.'"
-    )
-
-
-# ───────────────────────────────────────────────────────────────────────────
-# Main
-# ───────────────────────────────────────────────────────────────────────────
-
-
-def main() -> None:
-    console.print(Panel(
-        f"Connecting as agent [bold]{AGENT_ID}[/bold] to [bold]{CONTROL_PLANE}[/bold]",
-        title="MITRITY Multi-Agent Demo — Orchestrator",
-    ))
-
-    mcp = MCPClient()
-    console.print(f"[dim]Discovered {len(mcp.tools)} tools[/dim]")
-    agent = OrchestratorAgent(mcp)
+def worker_response(text: str) -> dict[str, Any] | None:
+    """The worker's JSON reply behind an allowed delegation (`[delegated to ...]\\n{...}`)."""
+    _, _, body = text.partition("\n")
     try:
-        scenarios(agent)
-    finally:
-        console.rule("[green]All scenarios complete — see the dashboard")
-        time.sleep(2)
+        parsed = json.loads(body)
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+class DemoAgent:
+    """A Claude Agent SDK session governed by MITRITY on both entrances."""
+
+    def __init__(self) -> None:
+        self.governor = Governor(
+            gateway={
+                "type": "stdio",
+                "command": GATEWAY_COMMAND,
+                "args": ["--config", GATEWAY_CONFIG],
+            },
+            gateway_name=GATEWAY_NAME,
+        )
+        self.options = self.governor.options(
+            model=os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5"),
+            system_prompt=SYSTEM_PROMPT,
+            tools=BUILTIN_TOOLS,
+            allowed_tools=[*BUILTIN_TOOLS, f"mcp__{GATEWAY_NAME}"],
+            # The demo has no human at a permission prompt: everything MITRITY
+            # allows is allowed. MITRITY's deny happens in the PreToolUse hook,
+            # before this callback is ever consulted.
+            can_use_tool=self._allow_everything,
+            permission_mode="default",
+            max_turns=8,
+            cwd="/workspace",
+            # A delegation blocks inside the gateway while the worker (and the
+            # workers it delegates to) run their own model loops, and a held
+            # call waits for a human; give the SDK's MCP tool timeout the same
+            # patience.
+            env={"MCP_TOOL_TIMEOUT": "600000"},
+        )
+        self._client: ClaudeSDKClient | None = None
+
+    async def _allow_everything(
+        self, tool_name: str, tool_input: dict[str, Any], context: ToolPermissionContext
+    ) -> PermissionResultAllow:
+        return PermissionResultAllow()
+
+    async def __aenter__(self) -> DemoAgent:
+        self._client = ClaudeSDKClient(options=self.options)
+        await self._client.connect()
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        if self._client is not None:
+            await self._client.disconnect()
+
+    async def run_prompt(self, prompt: str) -> str:
+        """Send a prompt and narrate every tool call as the SDK reports it."""
+        if self._client is None:
+            raise RuntimeError("DemoAgent is not connected; use `async with DemoAgent()`")
+        await self._client.query(prompt)
+
+        pending: dict[str, tuple[str, float]] = {}
+        text_parts: list[str] = []
+
+        async for message in self._client.receive_response():
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        text_parts.append(block.text)
+                    elif isinstance(block, ToolUseBlock):
+                        pending[block.id] = (display_name(block.name), time.monotonic())
+            elif isinstance(message, UserMessage) and isinstance(message.content, list):
+                for block in message.content:
+                    if not isinstance(block, ToolResultBlock):
+                        continue
+                    name, started = pending.pop(block.tool_use_id, ("tool", time.monotonic()))
+                    duration_ms = int((time.monotonic() - started) * 1000)
+                    text = result_text(block.content)
+                    lowered = text.lower()
+                    if block.is_error and ("approval" in lowered or "held" in lowered):
+                        tool_held(name, text, duration_ms)
+                    elif block.is_error:
+                        tool_blocked(name, text, duration_ms)
+                    else:
+                        tool_allowed(name, text, duration_ms)
+                        reply = worker_response(text) if name.startswith(DELEGATE_TOOL) else None
+                        if reply is not None:
+                            worker_reply(
+                                str(reply.get("worker", "worker")),
+                                float(reply.get("elapsed_sec", 0) or 0),
+                                str(reply.get("result", "")),
+                            )
+                    await pause(0.5)
+            elif isinstance(message, ResultMessage) and message.is_error:
+                # claude-agent-sdk 0.2.157: ResultMessage carries `errors: list[str] | None`,
+                # `result: str | None` and `subtype: str`; report the most specific one set.
+                detail = ", ".join(message.errors or []) or message.result or message.subtype
+                info(f"turn ended with an error: {detail}")
+
+        final_text = "\n".join(text_parts).strip()
+        if final_text:
+            agent_message(final_text)
+        return final_text
+
+
+async def main() -> None:
+    version = os.environ.get("MITRITY_GATEWAY_VERSION", "unknown")
+    agent_id = os.environ["MITRITY_AGENT_ID"]
+    control_plane = os.environ["MITRITY_CONTROL_PLANE_URL"]
+
+    console.print()
+    console.print("[bold cyan]MITRITY Multi-Agent Demo — Orchestrator[/bold cyan]", justify="center")
+    console.print(
+        "[dim]Phase 7: delegation chains and threat intelligence across three governed agents[/dim]",
+        justify="center",
+    )
+    console.print(
+        f"[dim]Gateway {version} · Claude Agent SDK {claude_agent_sdk.__version__} · "
+        f"mitrity {mitrity.__version__}[/dim]",
+        justify="center",
+    )
+    console.print(f"[dim]Agent {agent_id} · control plane {control_plane}[/dim]", justify="center")
+    console.print()
+
+    info(
+        "Starting the Claude Agent SDK session (the SDK starts the orchestrator's Mitrity "
+        "Gateway as its MCP server)..."
+    )
+
+    try:
+        async with DemoAgent() as agent:
+            attestation = agent.governor.attestation()
+            info(
+                "Attested to the edge: hooked built-ins "
+                f"{', '.join(attestation.hooked_tools) or 'none'}; "
+                f"unhooked execution tools {', '.join(attestation.unhooked_exec_tools) or 'none'}; "
+                f"other MCP servers {', '.join(attestation.other_mcp_servers) or 'none'}"
+            )
+            await pause(1.0)
+
+            phase_header(7, "Delegation Chains + Threat Intelligence")
+            await phase7_delegation_chains.run(agent)
+            await pause(2.0)
+
+            stats = agent.governor.stats
+            info(
+                f"Admission hook: {stats.admitted} built-in calls admitted "
+                f"({stats.allowed} allowed, {stats.denied} denied, {stats.held} held, "
+                f"{stats.unreachable} blocked because the edge could not be reached); "
+                f"{stats.attestations} attestation(s) sent."
+            )
+            print_summary()
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Demo interrupted.[/yellow]")
+        print_summary()
+    except Exception as e:
+        console.print(f"\n[red]Error: {e}[/red]")
+        raise
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

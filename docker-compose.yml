@@ -1,9 +1,13 @@
 # MITRITY Multi-Agent Governance Demo
 #
 # Three independent containers, each running its own Claude agent + its own
-# MITRITY Gateway with its own MITRITY agent identity. The orchestrator
-# coordinates work by HTTP-POSTing to the workers; both workers can also
-# delegate further (worker → worker) so the chain depth can grow naturally.
+# MITRITY Gateway with its own MITRITY agent identity. The orchestrator is a
+# Claude Agent SDK session, governed on both entrances (MCP tools through its
+# gateway, built-in tools through the admission hook); the workers are HTTP
+# /task servers running a Claude loop behind their own gateways. The
+# orchestrator coordinates work by delegating to the workers (a governed HTTP
+# POST); both workers can also delegate further (worker → worker) so the
+# chain depth can grow naturally.
 #
 # Run:    docker compose up --build
 # Stop:   docker compose down
@@ -17,9 +21,11 @@ services:
     container_name: iag-demo-orchestrator
     environment:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5}
       MITRITY_CONTROL_PLANE_URL: ${MITRITY_CONTROL_PLANE_URL}
       MITRITY_AGENT_ID: ${MITRITY_AGENT_ID_ORCHESTRATOR}
       MITRITY_AGENT_KEY: ${MITRITY_AGENT_KEY_ORCHESTRATOR}
+      MITRITY_DEMO_SPEED: ${MITRITY_DEMO_SPEED:-normal}
       # Peer agent IDs — embedded in scenario prompts so Claude can fill in
       # the to_agent_id arg correctly when delegating. Without these the
       # orchestrator's only known UUID is its own and it falsely flags every
@@ -30,11 +36,14 @@ services:
       DATA_WORKER_URL: http://data-worker:8081
       NOTIFY_WORKER_URL: http://notification-worker:8082
     depends_on:
+      # A worker is healthy once its gateway handshake is done and /task
+      # accepts work; the first scenario must not race that.
       data-worker:
-        condition: service_started
+        condition: service_healthy
       notification-worker:
-        condition: service_started
+        condition: service_healthy
     restart: "no"   # one-shot scenario runner; don't loop on exit
+    tty: true
 
   data-worker:
     build:
@@ -43,6 +52,7 @@ services:
     container_name: iag-demo-data-worker
     environment:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5}
       MITRITY_CONTROL_PLANE_URL: ${MITRITY_CONTROL_PLANE_URL}
       MITRITY_AGENT_ID: ${MITRITY_AGENT_ID_DATA}
       MITRITY_AGENT_KEY: ${MITRITY_AGENT_KEY_DATA}
@@ -54,6 +64,12 @@ services:
       NOTIFY_WORKER_URL: http://notification-worker:8082
     ports:
       - "8081:8081"   # exposed for orchestrator-side curl debugging only
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/healthz', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 36
+      start_period: 15s
     restart: unless-stopped
 
   notification-worker:
@@ -63,6 +79,7 @@ services:
     container_name: iag-demo-notification-worker
     environment:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5}
       MITRITY_CONTROL_PLANE_URL: ${MITRITY_CONTROL_PLANE_URL}
       MITRITY_AGENT_ID: ${MITRITY_AGENT_ID_NOTIFY}
       MITRITY_AGENT_KEY: ${MITRITY_AGENT_KEY_NOTIFY}
@@ -73,4 +90,10 @@ services:
       DATA_WORKER_URL: http://data-worker:8081
     ports:
       - "8082:8082"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8082/healthz', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 36
+      start_period: 15s
     restart: unless-stopped

@@ -4,6 +4,9 @@ api_key: "${MITRITY_AGENT_KEY}"
 control_plane:
   base_url: "${MITRITY_CONTROL_PLANE_URL}"
 
+# Each upstream's tools are served under its namespace as <namespace>__<tool>
+# (data__query_database, data__create_order, delegate__delegate_to). Policies target a tool as
+# mcp:<namespace>__<tool> (see README).
 upstreams:
   # DB-shaped tools — read + write. The orchestrator delegates here when it
   # needs persistent data work done.
@@ -12,7 +15,7 @@ upstreams:
     args: ["--role", "data-worker"]
     namespace: "data"
 
-  # Workers can also delegate further (worker → worker). Needed for the
+  # Workers can also delegate further (worker → worker) with delegate__delegate_to. Needed for the
   # deep-chain / circular scenarios.
   - name: "delegate"
     command: "/usr/local/bin/demo-tools"

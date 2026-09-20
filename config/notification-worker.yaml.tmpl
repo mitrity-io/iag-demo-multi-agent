@@ -4,6 +4,9 @@ api_key: "${MITRITY_AGENT_KEY}"
 control_plane:
   base_url: "${MITRITY_CONTROL_PLANE_URL}"
 
+# Each upstream's tools are served under its namespace as <namespace>__<tool>
+# (notify__send_notification, notify__email_customer, delegate__delegate_to). Policies target a tool as
+# mcp:<namespace>__<tool> (see README).
 upstreams:
   - name: "notify"
     command: "/usr/local/bin/demo-tools"

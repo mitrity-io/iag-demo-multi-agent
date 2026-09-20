@@ -1,8 +1,8 @@
 """Data worker — HTTP /task server that, on each request, spawns a Claude
-loop with the inbound task and a tool surface (DB-shaped tools + delegate_to).
+loop with the inbound task and a tool surface (DB-shaped tools + delegate__delegate_to).
 
 Every tool call is intercepted by the worker's own mitrity-gateway, which
-adds this worker's identity to the chain. The downstream delegate_to call
+adds this worker's identity to the chain. The downstream delegate__delegate_to call
 (if Claude decides to make one) carries the same chain_id forward, so the
 backend's chain ledger accumulates real hops across the three containers.
 """
@@ -23,7 +23,7 @@ from fastapi import FastAPI, Request
 from rich.console import Console
 
 console = Console()
-MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
+MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5")
 AGENT_ID = os.environ["MITRITY_AGENT_ID"]
 WORKER_ROLE = "data-worker"
 LISTEN_PORT = 8081
@@ -31,7 +31,7 @@ LISTEN_PORT = 8081
 # Peer agent UUIDs — populated per docker-compose so this worker's prompt
 # can hand Claude a real {target_worker → UUID} lookup table. Without this
 # Claude invents a non-UUID string for to_agent_id on downstream
-# delegate_to calls and the backend rejects with 400.
+# delegate__delegate_to calls and the backend rejects with 400.
 PEER_AGENT_IDS = {
     name: os.environ.get(env_var, "")
     for name, env_var in [
@@ -42,10 +42,10 @@ PEER_AGENT_IDS = {
 }
 SYSTEM_PROMPT = (
     "You are the data-worker agent in a multi-agent governance demo. You "
-    "have DB tools (query_database, fetch_orders, create_order) and a "
-    "delegate_to tool for chaining to other agents. When the incoming task "
+    "have DB tools (data__query_database, data__fetch_orders, data__create_order) and a "
+    "delegate__delegate_to tool for chaining to other agents. When the incoming task "
     "references chain_id, ALWAYS pass that exact chain_id on any "
-    "delegate_to call so the chain accumulates correctly. Be concise."
+    "delegate__delegate_to call so the chain accumulates correctly. Be concise."
 )
 
 
@@ -106,32 +106,29 @@ class WorkerAgent:
     def __init__(self, mcp: MCPClient) -> None:
         self.client = anthropic.Anthropic()
         self.mcp = mcp
-        self._to_api: dict[str, str] = {}
-        self._from_api: dict[str, str] = {}
-        for t in mcp.tools:
-            api = t["name"].replace(":", "__")
-            self._to_api[t["name"]] = api
-            self._from_api[api] = t["name"]
+        # The gateway serves each upstream tool as <namespace>__<tool>
+        # (data__fetch_orders, delegate__delegate_to): already a valid
+        # Anthropic API tool name, so it is passed through unchanged.
         self._tools = [
-            {"name": self._to_api[t["name"]], "description": t["description"], "input_schema": t["inputSchema"]}
+            {"name": t["name"], "description": t["description"], "input_schema": t["inputSchema"]}
             for t in mcp.tools
         ]
 
     def run(self, task: str, chain_id: str, delegator_agent_id: str) -> str:
         # delegator_agent_id here is the UUID of the upstream agent that
         # called THIS worker — NOT this worker's own AGENT_ID. When we
-        # forward the chain via delegate_to, we pass that same upstream
+        # forward the chain via delegate__delegate_to, we pass that same upstream
         # delegator forward so the backend's delegation ledger records
         # the real chain (orchestrator → data-worker → notification-worker)
         # instead of treating each hop as an independent root invocation.
         peer_table = "\n".join(
             f"  - target_worker='{name}' → to_agent_id='{aid}'"
             for name, aid in PEER_AGENT_IDS.items()
-        ) or "  (no peer UUIDs configured — downstream delegate_to will fail)"
+        ) or "  (no peer UUIDs configured — downstream delegate__delegate_to will fail)"
         prompt = (
             f"Incoming task (chain_id={chain_id}, delegator={delegator_agent_id}): {task}\n\n"
             f"If the task asks you to delegate further, you must pass chain_id='{chain_id}' "
-            f"and delegator_agent_id='{delegator_agent_id}' on your delegate_to call so the chain "
+            f"and delegator_agent_id='{delegator_agent_id}' on your delegate__delegate_to call so the chain "
             "stays connected. The delegator_agent_id is the UUID of the agent that called "
             "you (the upstream hop), NOT your own agent ID — keep forwarding it as-is. "
             "Pick the appropriate target_worker from the enum, and use the matching "
@@ -151,9 +148,8 @@ class WorkerAgent:
             messages.append({"role": "assistant", "content": r.content})
             results: list[dict[str, Any]] = []
             for tu in tool_uses:
-                mcp_name = self._from_api[tu.name]
                 try:
-                    out = self.mcp.call_tool(mcp_name, tu.input)
+                    out = self.mcp.call_tool(tu.name, tu.input)
                 except Exception as e:
                     out = f"[tool error: {e}]"
                 results.append({"type": "tool_result", "tool_use_id": tu.id, "content": out})

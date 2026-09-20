@@ -4,6 +4,22 @@ api_key: "${MITRITY_AGENT_KEY}"
 control_plane:
   base_url: "${MITRITY_CONTROL_PLANE_URL}"
 
+# Loopback admission API: the orchestrator's second entrance. The Claude Agent
+# SDK's built-in tools (Bash, Write, Edit) never produce an MCP call; the
+# mitrity adapter's PreToolUse hook asks this listener before the SDK runs
+# them. Unix socket and token file live in /run/mitrity (mode 0700, created
+# by the Dockerfile and re-asserted by entrypoint.sh).
+admission:
+  enabled: true
+  listen_addr: "unix:/run/mitrity/admission.sock"
+  token_file: "/run/mitrity/admission.token"
+
+# Each upstream's tools are served under its namespace as <namespace>__<tool>
+# (fs__read_file, fs__list_directory, delegate__delegate_to). Claude Code
+# exposes MCP tools to the model as mcp__<server>__<tool>, and the Anthropic
+# API accepts tool names matching ^[a-zA-Z0-9_-]{1,128}$ only, so the double
+# underscore is the one separator that can be called from the Agent SDK.
+# Policies target a tool as mcp:<namespace>__<tool> (see README).
 upstreams:
   # Read-only filesystem for the orchestrator. Lets it inspect a customer
   # request file before deciding what to delegate. Write access is
@@ -14,9 +30,9 @@ upstreams:
     args: ["--role", "orchestrator-fs"]
     namespace: "fs"
 
-  # Delegation tool — the meat of this demo. Calling delegate_to triggers a
-  # governed HTTP POST to the target worker; the gateway captures it as a
-  # delegation hop.
+  # Delegation tool — the meat of this demo. Calling delegate__delegate_to
+  # triggers a governed HTTP POST to the target worker; the gateway captures
+  # it as a delegation hop.
   - name: "delegate"
     command: "/usr/local/bin/demo-tools"
     args: ["--role", "orchestrator-delegate"]
