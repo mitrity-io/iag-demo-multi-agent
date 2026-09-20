@@ -1,3 +1,5 @@
+# Rendered by entrypoint.sh into /etc/mitrity/gateway.yaml, mode 0600: the
+# rendered file carries the agent key.
 agent_id: "${MITRITY_AGENT_ID}"
 api_key: "${MITRITY_AGENT_KEY}"
 
@@ -8,7 +10,8 @@ control_plane:
 # SDK's built-in tools (Bash, Write, Edit) never produce an MCP call; the
 # mitrity adapter's PreToolUse hook asks this listener before the SDK runs
 # them. Unix socket and token file live in /run/mitrity (mode 0700, created
-# by the Dockerfile and re-asserted by entrypoint.sh).
+# by the Dockerfile; entrypoint.sh checks the ownership and re-asserts the
+# mode).
 admission:
   enabled: true
   listen_addr: "unix:/run/mitrity/admission.sock"
@@ -22,9 +25,12 @@ admission:
 # Policies target a tool as mcp:<namespace>__<tool> (see README).
 upstreams:
   # Read-only filesystem for the orchestrator. Lets it inspect a customer
-  # request file before deciding what to delegate. Write access is
-  # intentionally absent — the orchestrator must delegate writes to the
-  # data-worker (which is what makes the privilege_escalation scenario fire).
+  # request file before deciding what to delegate. It is also the
+  # orchestrator's only file access: the SDK's own Read, Glob and Grep are
+  # disallowed (see orchestrator/runner.py), so every read is judged here.
+  # Write access is intentionally absent — the orchestrator must delegate
+  # writes to the data-worker (which is what makes the privilege_escalation
+  # scenario fire).
   - name: "filesystem"
     command: "/usr/local/bin/demo-tools"
     args: ["--role", "orchestrator-fs"]

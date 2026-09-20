@@ -14,7 +14,11 @@ for v in "${required[@]}"; do
     fi
 done
 
-envsubst < /etc/mitrity/gateway.yaml.tmpl > /etc/mitrity/gateway.yaml
+# Render the gateway config template with env vars. The rendered file carries
+# the agent key, so it is created readable by this user only: the umask covers
+# the file the subshell creates, the chmod a file that already existed.
+(umask 077 && envsubst < /etc/mitrity/gateway.yaml.tmpl > /etc/mitrity/gateway.yaml)
+chmod 0600 /etc/mitrity/gateway.yaml
 echo "[data-worker] gateway.yaml rendered for agent $MITRITY_AGENT_ID"
 
 exec python /app/server.py
