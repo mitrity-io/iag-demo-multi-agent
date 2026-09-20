@@ -20,6 +20,13 @@ its entrances:
   runs it (surface agent_hook). No scenario here asks for them; they are hooked
   so the orchestrator's coverage is complete and attested. If the edge cannot
   be reached, the call is denied — there is no fail-open mode.
+
+The SDK's file-reading built-ins (Read, Glob, Grep) are not enabled. The adapter
+does not hook them (they are outside its execution-capable inventory), so an
+enabled Read would let the model read the workspace — or /etc/passwd, the path
+S5 hands to the data-worker — without any decision being made. The gateway's
+fs__read_file and fs__list_directory are this demo's only file access, and every
+one of those calls is judged.
 """
 
 from __future__ import annotations
@@ -35,10 +42,8 @@ import mitrity
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeSDKClient,
-    PermissionResultAllow,
     ResultMessage,
     TextBlock,
-    ToolPermissionContext,
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
@@ -63,19 +68,25 @@ GATEWAY_COMMAND = "/usr/local/bin/mitrity-gateway"
 GATEWAY_CONFIG = "/etc/mitrity/gateway.yaml"
 DELEGATE_TOOL = "delegate__delegate_to"
 
-# The built-in tools the SDK may use. Bash, Write and Edit are execution-capable
-# and are admitted through the hook; Read, Glob and Grep are not hooked, and are
-# deliberately absent from the execution-capable inventory (see the contract).
-BUILTIN_TOOLS = ["Bash", "Write", "Edit", "Read", "Glob", "Grep"]
+# The built-in tools the SDK may use: every one of them is execution-capable and
+# admitted through the adapter's PreToolUse hook. The adapter (mitrity 0.2.0)
+# hooks only its execution-capable inventory (Bash, Write, Edit, MultiEdit,
+# NotebookEdit, WebFetch, WebSearch); Read, Glob and Grep are outside it and can
+# neither be hooked nor attested as hooked, so they stay out of the demo — the
+# gateway's fs__read_file / fs__list_directory are the only file access. They
+# are also passed as disallowed_tools so the attestation records the exclusion.
+BUILTIN_TOOLS = ("Bash", "Write", "Edit")
+UNHOOKABLE_READ_TOOLS = ("Read", "Glob", "Grep")
 
 SYSTEM_PROMPT = (
     "You are the orchestrator agent in a multi-agent governance demo. Your tools are served "
     "by an MCP server named 'mitrity': delegate__delegate_to hands a task to a worker, "
     "fs__read_file and fs__list_directory read the workspace. You also have your own built-in "
-    "Bash, Write, Edit and Read tools, which no task here needs. When asked to delegate, call "
-    "delegate__delegate_to with the EXACT argument values from the message — do not invent "
-    "IDs or chain identifiers, and do not substitute one tool for another. When a tool call is "
-    "denied, report the reason you were given and stop; do not retry. Be concise."
+    "Bash, Write and Edit tools. Use the MCP server's tools by default; use a built-in tool "
+    "only when a request explicitly asks for it — no task here does. When asked to delegate, "
+    "call delegate__delegate_to with the EXACT argument values from the message — do not "
+    "invent IDs or chain identifiers, and do not substitute one tool for another. When a tool "
+    "call is denied, report the reason you were given and stop; do not retry. Be concise."
 )
 
 
@@ -86,9 +97,9 @@ def display_name(tool_name: str) -> str:
         return f"{tool_name[len(prefix):]} (gateway)"
     if tool_name.startswith("mcp__"):
         return f"{tool_name} (ungoverned MCP server)"
-    if tool_name in ("Bash", "Write", "Edit"):
+    if tool_name in BUILTIN_TOOLS:
         return f"{tool_name} (built-in, admitted via hook)"
-    return f"{tool_name} (built-in)"
+    return f"{tool_name} (built-in, unhooked)"
 
 
 def result_text(content: Any) -> str:
@@ -128,13 +139,23 @@ class DemoAgent:
         self.options = self.governor.options(
             model=os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5"),
             system_prompt=SYSTEM_PROMPT,
-            tools=BUILTIN_TOOLS,
+            tools=list(BUILTIN_TOOLS),
+            # The demo has no human at a permission prompt: allowed_tools
+            # auto-approves every built-in and every tool the gateway serves,
+            # so the SDK never asks. MITRITY's deny happens in the PreToolUse
+            # hook, before the SDK's permission step is reached.
             allowed_tools=[*BUILTIN_TOOLS, f"mcp__{GATEWAY_NAME}"],
-            # The demo has no human at a permission prompt: everything MITRITY
-            # allows is allowed. MITRITY's deny happens in the PreToolUse hook,
-            # before this callback is ever consulted.
-            can_use_tool=self._allow_everything,
+            # Already absent from `tools`; listing them here too makes the
+            # exclusion part of the attested posture (and its config hash).
+            disallowed_tools=list(UNHOOKABLE_READ_TOOLS),
             permission_mode="default",
+            # Bounds each query(), not the session. Verified against the
+            # bundled Claude Code 2.1.277 (claude-agent-sdk 0.2.157): the SDK
+            # input path enters the query loop once per submitted user message
+            # with the turn counter reset to 1 and max_turns passed in on every
+            # entry; a prompt that exhausts it ends with an error_max_turns
+            # result for that prompt only, and the session goes on with the
+            # next one. No scenario in this demo needs more than one tool call.
             max_turns=8,
             cwd="/workspace",
             # A delegation blocks inside the gateway while the worker (and the
@@ -144,11 +165,6 @@ class DemoAgent:
             env={"MCP_TOOL_TIMEOUT": "600000"},
         )
         self._client: ClaudeSDKClient | None = None
-
-    async def _allow_everything(
-        self, tool_name: str, tool_input: dict[str, Any], context: ToolPermissionContext
-    ) -> PermissionResultAllow:
-        return PermissionResultAllow()
 
     async def __aenter__(self) -> DemoAgent:
         self._client = ClaudeSDKClient(options=self.options)
@@ -200,7 +216,10 @@ class DemoAgent:
             elif isinstance(message, ResultMessage) and message.is_error:
                 # claude-agent-sdk 0.2.157: ResultMessage carries `errors: list[str] | None`,
                 # `result: str | None` and `subtype: str`; report the most specific one set.
-                detail = ", ".join(message.errors or []) or message.result or message.subtype
+                # `errors` is read defensively: this is the error path, and an SDK without
+                # the field must not turn it into an AttributeError.
+                errors = getattr(message, "errors", None) or []
+                detail = ", ".join(errors) or message.result or message.subtype
                 info(f"turn ended with an error: {detail}")
 
         final_text = "\n".join(text_parts).strip()
@@ -240,6 +259,7 @@ async def main() -> None:
                 "Attested to the edge: hooked built-ins "
                 f"{', '.join(attestation.hooked_tools) or 'none'}; "
                 f"unhooked execution tools {', '.join(attestation.unhooked_exec_tools) or 'none'}; "
+                f"disallowed built-ins {', '.join(attestation.disallowed_tools) or 'none'}; "
                 f"other MCP servers {', '.join(attestation.other_mcp_servers) or 'none'}"
             )
             await pause(1.0)

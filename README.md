@@ -7,7 +7,7 @@ This is **phase 7** of the MITRITY governance demo series. The single-agent demo
 The orchestrator is governed on **both** of its entrances:
 
 - **MCP tools** (`delegate__delegate_to`, `fs__read_file`, `fs__list_directory`) reach the model through the orchestrator's gateway, which the SDK starts as its MCP server. Every `tools/call` is evaluated against your MITRITY policies before the upstream tool runs. An allowed delegation is a governed HTTP POST to the worker, whose own gateway judges the next hop on the same chain.
-- **The SDK's own built-in tools** (`Bash`, `Write`, `Edit`) never produce an MCP call. The [`mitrity`](https://github.com/mitrity-io/mitrity-python) adapter installs a `PreToolUse` hook that admits each one through the gateway's loopback admission API before the SDK runs it (`surface=agent_hook`). No scenario here uses them; they are hooked so the orchestrator's coverage is complete and attested. If the edge cannot be reached, the call is denied.
+- **The SDK's own built-in tools** (`Bash`, `Write`, `Edit`) never produce an MCP call. The [`mitrity`](https://github.com/mitrity-io/mitrity-python) adapter installs a `PreToolUse` hook that admits each one through the gateway's loopback admission API before the SDK runs it (`surface=agent_hook`). No scenario here uses them; they are hooked so the orchestrator's coverage is complete and attested. If the edge cannot be reached, the call is denied. The SDK's file-reading built-ins (`Read`, `Glob`, `Grep`) are not enabled: the adapter does not hook them, so the gateway's `fs__read_file` and `fs__list_directory` are the orchestrator's only file access and every read is judged.
 
 ## Prerequisites
 
@@ -85,6 +85,7 @@ The runner narrates each call as the SDK reports it — `OK`, `BLOCKED` or `HELD
 │  ├─ built-in tools: Bash, Write, Edit ── PreToolUse hook (mitrity adapter)               │
 │  │                                          └── POST /v1/admit ──► admission API          │
 │  │                                                (unix:/run/mitrity/admission.sock)     │
+│  │   (Read, Glob, Grep are disallowed — the model reads files through the gateway)       │
 │  └─ MCP server "mitrity" = Mitrity Gateway (stdio)                                       │
 │       ├─ upstream "delegate" (namespace delegate): delegate__delegate_to                 │
 │       └─ upstream "filesystem" (namespace fs): fs__read_file, fs__list_directory         │
@@ -106,7 +107,7 @@ Each agent's actions are evaluated by ITS gateway against ITS profile.
 The delegation chain accumulates real hops across the three event streams.
 ```
 
-The orchestrator's gateway serves both entrances: the MCP `tools/call` stream from the SDK and the loopback admission API the hook calls. It attests the runtime's posture (which built-in tools are hooked, which are not, other MCP servers, permission mode) so the dashboard can show honest coverage. The adapter is `mitrity.claude_agent_sdk.Governor` — see [`orchestrator/runner.py`](orchestrator/runner.py) for the ~20 lines that wire it up, and [iag-specs/sentinel/adapters.md](https://github.com/mitrity-io/iag-specs/blob/main/sentinel/adapters.md) for what it guarantees.
+The orchestrator's gateway serves both entrances: the MCP `tools/call` stream from the SDK and the loopback admission API the hook calls. It attests the runtime's posture (which built-in tools are hooked, which are not, which are disallowed, other MCP servers, permission mode) so the dashboard can show honest coverage. The adapter is `mitrity.claude_agent_sdk.Governor` — see [`orchestrator/runner.py`](orchestrator/runner.py) for the ~20 lines that wire it up, and [iag-specs/sentinel/adapters.md](https://github.com/mitrity-io/iag-specs/blob/main/sentinel/adapters.md) for what it guarantees.
 
 The workers are plain HTTP `/task` servers: each request runs a Claude tool-use loop against the worker's own gateway over stdio, so every worker-side call — including a further `delegate__delegate_to` — is judged under the worker's identity.
 
@@ -149,6 +150,9 @@ Rules target gateway-served tools as `mcp:<namespace>__<tool>` (`mcp:delegate__d
 
 **The orchestrator exits before the first scenario.**
 `docker compose up` waits for both workers to report healthy (their gateway handshake with the control plane). If a worker never becomes healthy, its logs (`docker compose logs data-worker`) name the missing variable or the rejected agent key.
+
+**The orchestrator exits with `FATAL: /run/mitrity ...`.**
+The admission runtime directory is missing or owned by another uid. The image creates it for `demo` (uid 1000), mode 0700; a tmpfs mounted on `/run` or a `user:` override in `docker-compose.yml` changes that. Create the directory for the container user (mode 0700) or drop the override.
 
 ## License
 
