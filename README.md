@@ -107,7 +107,7 @@ Each agent's actions are evaluated by ITS gateway against ITS profile.
 The delegation chain accumulates real hops across the three event streams.
 ```
 
-The orchestrator's gateway serves both entrances: the MCP `tools/call` stream from the SDK and the loopback admission API the hook calls. It attests the runtime's posture (which built-in tools are hooked, which are not, which are disallowed, other MCP servers, permission mode) so the dashboard can show honest coverage. The adapter is `mitrity.claude_agent_sdk.Governor` — see [`orchestrator/runner.py`](orchestrator/runner.py) for the ~20 lines that wire it up, and [iag-specs/sentinel/adapters.md](https://github.com/mitrity-io/iag-specs/blob/main/sentinel/adapters.md) for what it guarantees.
+The orchestrator's gateway serves both entrances: the MCP `tools/call` stream from the SDK and the loopback admission API the hook calls. It attests the runtime's posture (which built-in tools are hooked, which are not, which are disallowed, other MCP servers, permission mode) so the dashboard can show honest coverage. The adapter is `mitrity.claude_agent_sdk.Governor` — see [`orchestrator/runner.py`](orchestrator/runner.py) for the ~20 lines that wire it up, and [the Framework Adapters contract](https://mitrity.com/docs/integrations/adapters) for what it guarantees.
 
 The workers are plain HTTP `/task` servers: each request runs a Claude tool-use loop against the worker's own gateway over stdio, so every worker-side call — including a further `delegate__delegate_to` — is judged under the worker's identity.
 
